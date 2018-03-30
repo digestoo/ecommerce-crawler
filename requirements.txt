@@ -1,0 +1,7 @@
+scrapy
+phonenumbers
+python-slugify
+twisted
+klein
+bs4
+tldextract

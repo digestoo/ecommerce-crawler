@@ -1,0 +1,7 @@
+*.csv
+*.json
+resources/*.json
+logs
+logs/*
+ecommerce_crawler/logs
+ecommerce_crawler/__pycache__
