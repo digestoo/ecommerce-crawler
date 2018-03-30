@@ -5,5 +5,4 @@
 resources/*.json
 logs
 logs/*
-ecommerce_crawler/logs
-ecommerce_crawler/__pycache__
+ecommerce_crawler/logs/*_
