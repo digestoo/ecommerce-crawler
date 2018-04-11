@@ -140,8 +140,9 @@ def detect_lang(domain):
 class EcommerceCrawler(scrapy.Spider):
     name = "ecommerce_crawler"
     custom_settings = {
-
+        'DEPTH_LIMIT':3,
         'DNS_TIMEOUT':5,
+        'CLOSESPIDER_TIMEOUT':15,
         'LOG_ENABLED':False,
         'DOWNLOAD_TIMEOUT':10,
         'RETRY_TIMES':1,
@@ -153,7 +154,7 @@ class EcommerceCrawler(scrapy.Spider):
 
         'LOG_LEVEL':'DEBUG'
     }
-    start_urls = ['http://bonprix.de']
+    start_urls = ['http://militaria.pl']
     
     def parse(self, response):
             try:
