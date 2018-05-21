@@ -69,11 +69,14 @@ def get_rid_off_www(url):
         return url
 
 
+langs_supported = ['fr','en','pl','de','es','it','nl','ua','se','no','fi','sk','cz','ro','hu']
+
+
 def subdomain_lang(x,main):
     if (x.domain == main.domain and x.suffix != main.suffix):
         return x.domain + '.' + x.suffix
     if (x.domain==main.domain and x.suffix==main.suffix) and \
-    x.subdomain in ['fr','en','pl','de','es','it','nl','ua']:
+    x.subdomain in langs_supported:
         return '.'.join(x)
     return None
 
@@ -98,6 +101,30 @@ def get_languages_from_hreflang(response):
 from scrapy.linkextractors import LinkExtractor
 
 
+# rexy = {}
+
+# def prepare_rexes(service_list):
+#     result = {}
+#     for k in service_list:
+#         rex = re.compile(r'\b%s\b'%k['name'].lower(),re.I)
+#         result[k['name']] = [rex]
+#         if (k['other'] is not None) and (len(k['other'])>0):
+#             bex = re.compile(r'\b(%s)\b'%k['other'].lower(),re.I)
+#             result[k['name']].append(bex)
+#     return result
+
+
+
+# def service_checker_rex(text,service_list,rexy):
+#     result = []
+#     for k in service_list:
+#         for p in rexy[k['name']]:
+#             if p.search(text):
+#                 result.append(k['name'])
+#                 break
+#     return result
+
+
 def service_checker(text,service_list):
     result = []
     for k in service_list:
@@ -105,11 +132,11 @@ def service_checker(text,service_list):
         if k['name'].lower() in text:
             ok = 1
         if (k['other'] is not None) and (len(k['other'])>0):
-            for other in k['other'].split(','):
-                if other.lower() in text:
-                    ok=1
+            for other in k['other'].split('|'):
+               if other.lower() in text:
+                   ok=1
         if ok>0:
-            result.append(k['name'])
+            result.append(k['name'].strip())
     return result
 
 
@@ -127,24 +154,33 @@ keywords_dict = read_json_file('../resources/keywords.json')
 couriers_list = read_json_file('../resources/couriers.json')
 psp_list = read_json_file('../resources/psp_providers.json')
 
+#psp_rex = prepare_rexes(psp_list)
+#couriers_rex = prepare_rexes(couriers_list)
 
+def get_phone_country(lang):
+    if lang == 'en':
+        return None
+    if lang in langs_supported:
+        return lang.upper()
+    return None
 
-def detect_lang(domain):
-    suffix = tld(domain).suffix
-    if suffix in ['pl','fr','it','es','ua','nl','cz','de']:
+def detect_lang(url):
+    suffix_full = tld(url).suffix
+    suffix = suffix_full.split('.')[-1]
+    if suffix in langs_supported:
         return suffix
-    if suffix in ['co.uk','com','net']:
+    else:
         return 'en'
 
 
 class EcommerceCrawler(scrapy.Spider):
     name = "ecommerce_crawler"
     custom_settings = {
-        'DEPTH_LIMIT':3,
+        'DEPTH_LIMIT':os.getenv('DEPTH',2),
         'DNS_TIMEOUT':5,
-        'CLOSESPIDER_TIMEOUT':15,
-        'LOG_ENABLED':False,
-        'DOWNLOAD_TIMEOUT':10,
+        'CLOSESPIDER_TIMEOUT':os.getenv('TIMEOUT', 7),
+        'LOG_ENABLED':True,
+        'DOWNLOAD_TIMEOUT':5,
         'RETRY_TIMES':1,
         'USER_AGENT':"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_6_8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/32.0.1700.102 Safari/537.36",
         
@@ -154,44 +190,52 @@ class EcommerceCrawler(scrapy.Spider):
 
         'LOG_LEVEL':'DEBUG'
     }
-    start_urls = ['http://militaria.pl']
-    
+    start_urls = ['https://adamot.pl']
+    #allowed_domains = ['http://happysocks.com']
+
     def parse(self, response):
             try:
                 psp = []
                 couriers = []
                 other = []
-
-
+                keywords = []
+                phone_country = None
                 main_domain = get_rid_off_www(url_to_domain(response.url))
 
-                country = detect_lang(main_domain)
+                lang = detect_lang(response.url)
 
-                if country in keywords_dict:
-                    keywords = keywords_dict[country]
-                else:
-                    keywords = []
+                if getattr(self,'all_phones','all') == 'all':    
+                    phone_country = get_phone_country(lang)
 
-                links = LinkExtractor().extract_links(response)
+                if lang in keywords_dict:
+                    keywords = keywords_dict[lang]
+
+                keywords.extend(keywords_dict['en'])
+                keywords = list(set(keywords))
                 
-                for link in links:
-                        link_slug = slugify.slugify(link.text)
-                        if tldextract.extract(link.url)[1] == tldextract.extract(main_domain)[1]:
-                            for keyword in keywords:
-                                if keyword in link_slug or keyword in link.url:
-                                    yield Request(url=link.url)
+                if tldextract.extract(response.request.url)[1] == tldextract.extract(self.start_urls[0])[1]:
+                    links = LinkExtractor().extract_links(response)
+                    
+                    for link in links:
+                            link_slug = slugify.slugify(link.text)
+                            if tldextract.extract(link.url)[1] == tldextract.extract(main_domain)[1]:
+                                for keyword in keywords:  
+                                    if keyword in link_slug or keyword in link.url:
+                                        yield Request(url=link.url)
                 
 
                 body_no_html = clean_html(response.body)
                 body_no_num = clean_all_numbers(body_no_html)
                 text = body_no_num.replace('\n',' ')
+#                text = text.replace('\t',' ')
+#               text = ' %s '%text
 
                 psp = service_checker(text,psp_list)
                 couriers = service_checker(text,couriers_list)
 
                 yield {
                     'domain': get_rid_off_www(url_to_domain(response.url)),
-                    'phones': get_phones(body_no_html, None), #phone_country(country)),
+                    'phones': get_phones(body_no_html, phone_country),
                     'emails': [email for email in get_emails(text) if email_at_domain(email,main_domain)],
                     'couriers': list(set(couriers)),
                     'psp_providers': list(set(psp)),

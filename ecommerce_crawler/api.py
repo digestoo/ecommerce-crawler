@@ -34,23 +34,28 @@ class MyCrawlerRunner(CrawlerRunner):
 
 def return_spider_output(output):
     wynik = {}
-
+    from collections import Counter
     for x in ['phones','emails','couriers','psp_providers','langs']:
         lista = []
         for item in [dict(p) for p in output]:
             if len(item[x])>0:
                 lista.extend(item[x])
-        wynik[x]=list(set(lista))
+        if x in ['phones','emails']:
+            wynik[x] = [p[0] for p in Counter(lista).most_common(3)]
+        else:
+            wynik[x]=list(set(lista))
+            
     return json.dumps(wynik)
 
 
 @app.route("/ecommerce/<domain>")
 def getdata(request,domain):
+    all_phones = request.args.get(b'phones',[b'all'])[0].decode('utf-8')
     runner = MyCrawlerRunner()
     spider = EcommerceCrawler()
-    deferred = runner.crawl(spider,start_urls=['http://%s'%domain])
+    spider.all_phones = all_phones
+    deferred = runner.crawl(spider,all_phones=all_phones,start_urls=['http://%s'%domain])
     deferred.addCallback(return_spider_output)
-    
     return deferred
 
 

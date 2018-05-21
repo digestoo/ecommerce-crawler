@@ -9,7 +9,7 @@ Currently supported:
 * Languages (as a list of domains)
 
 Currently supported markets:
-- UK, PL, DE, NL, ES, IT, FR
+- UK, PL, DE, NL, ES, IT, FR, SE, NO, CZ, SK, FI, RO
 
 ## Requirement
 
@@ -49,3 +49,7 @@ curl -XGET -H "Content-Type: application/json" http://localhost:5005/ecommerce/<
 GET params:
 
 - `domain`
+
+Additional parameters:
+- `?phones=international` - only international numbers  
+- `?phones=all` - all numbers also local
