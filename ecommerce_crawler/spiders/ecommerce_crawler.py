@@ -6,10 +6,10 @@ import scrapy
 import scrapy
 import os
 from scrapy.spiders import CrawlSpider, Rule, SitemapSpider
-from scrapy.linkextractors import LinkExtractor
+from scrapy.linkextractors import FilteringLinkExtractor as LinkExtractor
 from scrapy.http import Request, XmlResponse
 from scrapy.selector import Selector
-
+import logging
 import phonenumbers
 
 import re
@@ -40,7 +40,7 @@ def clean_all_numbers(text):
 
 
 def clean_html(html):
-    soup = BeautifulSoup(html)
+    soup = BeautifulSoup(html,'lxml')
     for s in soup(['script', 'style']):
         s.decompose()
     return (' '.join(soup.stripped_strings)).lower()
@@ -175,75 +175,84 @@ def detect_lang(url):
 
 class EcommerceCrawler(scrapy.Spider):
     name = "ecommerce_crawler"
+    #handle_httpstatus_list = [404, 500, 503]
+
     custom_settings = {
         'DEPTH_LIMIT':os.getenv('DEPTH',2),
-        'DNS_TIMEOUT':5,
-        'CLOSESPIDER_TIMEOUT':os.getenv('TIMEOUT', 7),
-        'LOG_ENABLED':True,
-        'DOWNLOAD_TIMEOUT':5,
-        'RETRY_TIMES':1,
+        #'LOG_FILE': '/tmp/mdexample2.log',
+        'DNS_TIMEOUT':10,
+        'REACTOR_THREADPOOL_MAXSIZE': 20,
+        'CONCURRENT_REQUESTS': 5,
+        'CLOSESPIDER_TIMEOUT':os.getenv('TIMEOUT', 20),
+        'LOG_ENABLED':False,
+        'DOWNLOAD_TIMEOUT':10,
+        'COOKIES_ENABLED': False,
+        #'RETRY_ENABLED':False,
+        'MEMUSAGE_ENABLE':True,
+        # 'MEMUSAGE_ENABLED': 1,
+        #'MEMUSAGE_LIMIT_MB': 256,
+        #'LOG_STDOUT': True,
+        'RETRY_TIMES':2,
         'USER_AGENT':"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_6_8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/32.0.1700.102 Safari/537.36",
         
         'DEFAULT_REQUEST_HEADERS': {
            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
 
-        'LOG_LEVEL':'DEBUG'
+        'LOG_LEVEL':'INFO'
     }
-    start_urls = ['https://adamot.pl']
+    start_urls = ['http://centrobud.pl']
     #allowed_domains = ['http://happysocks.com']
 
-    def parse(self, response):
-            try:
-                psp = []
-                couriers = []
-                other = []
-                keywords = []
-                phone_country = None
-                main_domain = get_rid_off_www(url_to_domain(response.url))
+    def parse(self,response):
+#        print (self.response)
+        main_domain = get_rid_off_www(url_to_domain(response.url))
+        phone_country = None
+        lang = detect_lang(response.url)
 
-                lang = detect_lang(response.url)
+        if getattr(self,'all_phones','all') == 'all':    
+            phone_country = get_phone_country(lang)
 
-                if getattr(self,'all_phones','all') == 'all':    
-                    phone_country = get_phone_country(lang)
+        keywords = []
 
-                if lang in keywords_dict:
-                    keywords = keywords_dict[lang]
+        if lang in keywords_dict:
+            keywords = keywords_dict[lang] + keywords_dict['en']
+        else:
+            keywords = keywords_dict['en']
+        
+        keywords = list(set(keywords))
+        potential_urls = []
 
-                keywords.extend(keywords_dict['en'])
-                keywords = list(set(keywords))
-                
-                if tldextract.extract(response.request.url)[1] == tldextract.extract(self.start_urls[0])[1]:
-                    links = LinkExtractor().extract_links(response)
-                    
-                    for link in links:
-                            link_slug = slugify.slugify(link.text)
-                            if tldextract.extract(link.url)[1] == tldextract.extract(main_domain)[1]:
-                                for keyword in keywords:  
-                                    if keyword in link_slug or keyword in link.url:
-                                        yield Request(url=link.url)
-                
+        if self.main_page:
+            links = LinkExtractor().extract_links(response)
+            self.main_page=False
+            for link in links:
+                link_slug = slugify.slugify(link.text)
+                if tldextract.extract(link.url)[1] == tldextract.extract(main_domain)[1]:
+                    for keyword in keywords:  
+                        if keyword in link_slug or keyword in link.url:
+                            if not link.url.endswith('pdf'):
+                                potential_urls.append(link.url)
 
-                body_no_html = clean_html(response.body)
-                body_no_num = clean_all_numbers(body_no_html)
-                text = body_no_num.replace('\n',' ')
-#                text = text.replace('\t',' ')
-#               text = ' %s '%text
+            for x in list(set(potential_urls))[:8]:
+                yield Request(url=x)
+            potential_urls.clear()
+            del potential_urls
 
-                psp = service_checker(text,psp_list)
-                couriers = service_checker(text,couriers_list)
+        body_no_html = clean_html(response.body)
+        # body_no_html = clean_all_numbers(body_no_html)
+        # body_no_html = body_no_html.replace('\n',' ')
 
-                yield {
+        couriers = service_checker(body_no_html,couriers_list)
+        psp = service_checker(body_no_html,psp_list)
+
+        yield {
                     'domain': get_rid_off_www(url_to_domain(response.url)),
                     'phones': get_phones(body_no_html, phone_country),
-                    'emails': [email for email in get_emails(text) if email_at_domain(email,main_domain)],
+                    'emails': [email for email in get_emails(body_no_html) if email_at_domain(email,main_domain)],
                     'couriers': list(set(couriers)),
                     'psp_providers': list(set(psp)),
                     'langs': list(set(get_languages_from_hreflang(response) 
                         + get_languages_from_links(response, main_domain))),
                 }
-            except Exception as e:
-                print(e)
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                traceback.print_exception(exc_type, exc_value, exc_traceback, limit=10, file=sys.stdout)
 
