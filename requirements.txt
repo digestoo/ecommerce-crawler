@@ -5,3 +5,4 @@ twisted
 klein
 bs4
 tldextract
+langid

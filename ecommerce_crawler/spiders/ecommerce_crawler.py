@@ -11,7 +11,7 @@ from scrapy.http import Request, XmlResponse
 from scrapy.selector import Selector
 import logging
 import phonenumbers
-
+import langid
 import re
 import sys, traceback
 import slugify
@@ -36,7 +36,8 @@ def clean_all_numbers(text):
             pass
         else:
             new_text+=text[x]
-    return new_text
+
+    return new_text.replace('.','').replace('-','')
 
 
 def clean_html(html):
@@ -101,28 +102,37 @@ def get_languages_from_hreflang(response):
 from scrapy.linkextractors import LinkExtractor
 
 
-# rexy = {}
-
-# def prepare_rexes(service_list):
-#     result = {}
-#     for k in service_list:
-#         rex = re.compile(r'\b%s\b'%k['name'].lower(),re.I)
-#         result[k['name']] = [rex]
-#         if (k['other'] is not None) and (len(k['other'])>0):
-#             bex = re.compile(r'\b(%s)\b'%k['other'].lower(),re.I)
-#             result[k['name']].append(bex)
-#     return result
+def get_kvk_nl(text):
+  p =  [x[1] for x in re.findall(r'(kvk)[^0-9]{0,10}(\d{8})[^0-9]', text)]
+  return list(set(p))
 
 
+def get_nip(text):
+  p =  [x[1] for x in re.findall(r'(nip)[^0-9a-z]*(\d{10})[^0-9]', text)]
+  return list([t for t in p if valid_nip(t)])[:1]
 
-# def service_checker_rex(text,service_list,rexy):
-#     result = []
-#     for k in service_list:
-#         for p in rexy[k['name']]:
-#             if p.search(text):
-#                 result.append(k['name'])
-#                 break
-#     return result
+def get_rcs(text):
+  p =  [x[1] for x in re.findall(r'(rcs|siret|siren|métropole|immatriculée)[^0-9]*(\d{9})[^0-9a-z]', text)]
+  q = [x[0] for x in re.findall(r'[^0-9a-z](\d{9})[^0-9]{0,4}(rcs)', text)]
+  notvalid = set(['546380197','542097902'])
+  potentials = set( p + q) - notvalid
+  return potentials
+
+    
+def valid_nip(x):
+    y = x[:-1]
+    control = [6,5,7,2,3,4,5,6,7]
+    return (sum(list(map(lambda x: x[0]*x[1], (zip(map(int,y),control))))) % 11) == int(x[-1])
+    
+def get_uk_number(text):
+  p =  [x[1].rjust(8,'0') for x in re.findall(r'(company|registration|companies house|registered)[^0-9]{1,20}((\d){6,8})[^0-9]', text)]
+  return list(p)
+
+
+def get_spain_nif_cif(text):
+  p =  [x[1] for x in re.findall(r'(nif|cif)[^0-9]{1,10}((a|b)(\d){8})[^0-9]', text)]
+  return list(p)
+
 
 
 def service_checker(text,service_list):
@@ -151,26 +161,53 @@ def email_at_domain(email,domain):
 
 
 keywords_dict = read_json_file('../resources/keywords.json')
-couriers_list = read_json_file('../resources/couriers.json')
+couriers_list = read_json_file('../resources/meta.json')
 psp_list = read_json_file('../resources/psp_providers.json')
 
-#psp_rex = prepare_rexes(psp_list)
-#couriers_rex = prepare_rexes(couriers_list)
 
-def get_phone_country(lang):
+def get_phone_country(lang,url):
+    suffix_full = tld(url).suffix
+    if suffix_full == 'co.uk':
+        return 'GB'
+
     if lang == 'en':
         return None
     if lang in langs_supported:
         return lang.upper()
     return None
 
-def detect_lang(url):
+def detect_lang(url, response):
     suffix_full = tld(url).suffix
     suffix = suffix_full.split('.')[-1]
     if suffix in langs_supported:
         return suffix
     else:
-        return 'en'
+        title = Selector(response=response).xpath('//title').extract()
+        description = Selector(response=response).xpath('//meta[@name="description"]//@content').extract()
+        langi = langid.classify( ','.join(title+description) )
+        if langi[0] not in langs_supported:
+            return 'en'
+        else:
+            return langi[0]
+
+
+def get_number_not_supported_lang(text):
+    return []
+
+def get_company_number_function(lang):
+    if lang == 'fr':
+        return get_rcs
+    elif lang == 'nl':
+        return get_kvk_nl
+    elif lang == 'pl':
+        return get_nip
+    elif lang == 'en':
+        return get_uk_number
+    elif lang == 'es':
+        return get_spain_nif_cif
+    else:
+        return get_number_not_supported_lang
+ 
 
 
 class EcommerceCrawler(scrapy.Spider):
@@ -179,10 +216,10 @@ class EcommerceCrawler(scrapy.Spider):
 
     custom_settings = {
         'DEPTH_LIMIT':os.getenv('DEPTH',2),
-        #'LOG_FILE': '/tmp/mdexample2.log',
+        # 'LOG_FILE': '/tmp/mdexample2.log',
         'DNS_TIMEOUT':10,
         'REACTOR_THREADPOOL_MAXSIZE': 20,
-        'CONCURRENT_REQUESTS': 5,
+        'CONCURRENT_REQUESTS': 2,
         'CLOSESPIDER_TIMEOUT':os.getenv('TIMEOUT', 20),
         'LOG_ENABLED':False,
         'DOWNLOAD_TIMEOUT':10,
@@ -205,13 +242,20 @@ class EcommerceCrawler(scrapy.Spider):
     #allowed_domains = ['http://happysocks.com']
 
     def parse(self,response):
-#        print (self.response)
-        main_domain = get_rid_off_www(url_to_domain(response.url))
-        phone_country = None
-        lang = detect_lang(response.url)
+        main_domain = url_to_domain(get_rid_off_www(response.url))
+        self.lang = detect_lang(response.url,response)
+        return self.parse_ecommerce(response)
 
-        if getattr(self,'all_phones','all') == 'all':    
-            phone_country = get_phone_country(lang)
+
+    def parse_ecommerce(self,response):
+#        print (self.response)
+        main_domain = url_to_domain(get_rid_off_www(response.url))
+        phone_country = None
+        
+        lang = self.lang
+
+        if getattr(self,'phones','all') == 'all':    
+            phone_country = get_phone_country(lang,response.url)
 
         keywords = []
 
@@ -227,23 +271,26 @@ class EcommerceCrawler(scrapy.Spider):
             links = LinkExtractor().extract_links(response)
             self.main_page=False
             for link in links:
-                link_slug = slugify.slugify(link.text)
-                if tldextract.extract(link.url)[1] == tldextract.extract(main_domain)[1]:
-                    for keyword in keywords:  
-                        if keyword in link_slug or keyword in link.url:
+                link_text_slug = slugify.slugify(link.text)
+
+                if tldextract.extract(url_to_domain(get_rid_off_www(link.url)))[1] == \
+                    tldextract.extract(main_domain)[1]:
+                    for keyword in keywords:
+                        if keyword in link_text_slug or keyword in link.url:
                             if not link.url.endswith('pdf'):
                                 potential_urls.append(link.url)
 
-            for x in list(set(potential_urls))[:8]:
-                yield Request(url=x)
+            for x in list(set(potential_urls)):
+                yield Request(url=x, callback=self.parse_ecommerce)
+
             potential_urls.clear()
             del potential_urls
 
         body_no_html = clean_html(response.body)
-        # body_no_html = clean_all_numbers(body_no_html)
-        # body_no_html = body_no_html.replace('\n',' ')
+        body_numbers = clean_all_numbers(body_no_html)
+        body_no_html = body_no_html.replace('\n',' ')
 
-        couriers = service_checker(body_no_html,couriers_list)
+        couriers = service_checker(body_no_html,couriers_list[lang]['couriers'])
         psp = service_checker(body_no_html,psp_list)
 
         yield {
@@ -254,5 +301,7 @@ class EcommerceCrawler(scrapy.Spider):
                     'psp_providers': list(set(psp)),
                     'langs': list(set(get_languages_from_hreflang(response) 
                         + get_languages_from_links(response, main_domain))),
+                    'company_number': get_company_number_function(lang)(body_numbers),
+                    'used_lang': [lang]
                 }
 

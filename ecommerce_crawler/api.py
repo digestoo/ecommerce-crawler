@@ -4,6 +4,7 @@ from klein import run, route, Klein
 app = Klein()
 
 import uuid
+import langid
 # import objgraph
 import json
 from scrapy import signals
@@ -47,10 +48,10 @@ class EmptyOutput(Exception):
 def return_spider_output(output):
     if len(output) == 0:
         raise EmptyOutput()
-    
+    print('output',output)
     wynik = {}
     from collections import Counter
-    for x in ['phones','emails','couriers','psp_providers','langs']:
+    for x in ['phones','emails','couriers','psp_providers','langs','company_number','used_lang']:
         lista = []
         for item in [dict(p) for p in output]:
             if len(item[x])>0:
